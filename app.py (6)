@@ -1,0 +1,308 @@
+import os
+import secrets
+from flask import Flask, render_template_string, request, redirect, url_for, session, send_from_directory, abort
+from flask_sqlalchemy import SQLAlchemy
+from werkzeug.utils import secure_filename
+from datetime import datetime
+
+app = Flask(__name__)
+app.config['SECRET_KEY'] = secrets.token_hex(32)
+
+# --- إعدادات المسارات ---
+basedir = os.path.abspath(os.path.dirname(__file__))
+UPLOAD_FOLDER = os.path.join(basedir, 'uploads')
+app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
+if not os.path.exists(UPLOAD_FOLDER): os.makedirs(UPLOAD_FOLDER)
+
+app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///' + os.path.join(basedir, 'hixu_ultimate_v12.db')
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+db = SQLAlchemy(app)
+
+# --- قاعدة البيانات المطورة ---
+class Game(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    title = db.Column(db.String(100))
+    description = db.Column(db.Text)
+    image_filename = db.Column(db.String(200))
+    file_filename = db.Column(db.String(200))
+    video_url = db.Column(db.String(500)) # خانة رابط الفيديو
+    external_link = db.Column(db.String(500))
+    downloads_count = db.Column(db.Integer, default=0)
+    date_added = db.Column(db.DateTime, default=datetime.utcnow)
+
+# --- الواجهة الاحترافية ---
+MASTER_HTML = """
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hixu Store | ألعاب 2026</title>
+    <link href="https://fonts.googleapis.com/css2?family=Tajawal:wght@400;700;900&display=swap" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        body { background: #ffffff; font-family: 'Tajawal', sans-serif; color: #1e293b; transition: 0.3s; }
+        .navbar { background: #fff; border-bottom: 1px solid #f1f1f1; padding: 15px 0; }
+        .nav-logo { font-weight: 900; font-size: 1.8rem; color: #2563eb !important; text-decoration: none; }
+        
+        .hero-section { padding: 50px 0; text-align: center; }
+        .hero-title { font-weight: 900; font-size: 3rem; color: #111; }
+        
+        .search-input { max-width: 500px; margin: 20px auto; border-radius: 50px; padding: 12px 25px; border: 2px solid #eee; text-align: center; }
+
+        .game-card { border: none; border-radius: 20px; background: #fff; box-shadow: 0 5px 15px rgba(0,0,0,0.05); transition: 0.4s; overflow: hidden; height: 100%; border: 1px solid #f8f9fa; cursor: pointer; }
+        .game-card:hover { transform: translateY(-10px); box-shadow: 0 15px 35px rgba(0,0,0,0.1); }
+        .game-img { width: 100%; height: 200px; object-fit: cover; }
+        
+        .btn-enter { background: #2563eb; color: #fff; border-radius: 12px; padding: 10px; font-weight: 700; text-decoration: none; display: block; text-align: center; }
+
+        /* مشغل الفيديو */
+        .video-container { position: relative; width: 100%; border-radius: 25px; overflow: hidden; background: #000; box-shadow: 0 20px 50px rgba(0,0,0,0.2); margin-bottom: 30px; }
+        .video-container iframe, .video-container video { width: 100%; aspect-ratio: 16 / 9; display: block; }
+
+        .timer-box { display: none; background: #f8fafc; padding: 30px; border-radius: 20px; margin-top: 20px; text-align: center; border: 2px solid #e2e8f0; }
+        .timer-num { font-size: 3rem; font-weight: 900; color: #2563eb; }
+
+        .hidden-admin { opacity: 0.02; color: #ccc; text-decoration: none; font-size: 0.6rem; transition: 0.5s; display: block; margin-top: 10px; }
+        .hidden-admin:hover { opacity: 1; color: #2563eb; }
+        
+        footer { padding: 40px 0; text-align: center; border-top: 1px solid #f1f1f1; margin-top: 60px; }
+    </style>
+</head>
+<body>
+
+<nav class="navbar sticky-top">
+    <div class="container d-flex justify-content-between align-items-center">
+        <a class="nav-logo" href="/">HIXU</a>
+        {% if session.get('admin') %}
+            <a href="/upload" class="btn btn-dark btn-sm rounded-pill px-3">لوحة التحكم</a>
+        {% endif %}
+    </div>
+</nav>
+
+<div class="container">
+    {% if page == 'home' %}
+        <div class="hero-section">
+            <h1 class="hero-title">متجر Hixu</h1>
+            <p class="text-muted">تحميل أسرع، أمان أكثر، فيديوهات حصرية لكل لعبة</p>
+            <form action="/" method="GET">
+                <input type="text" name="q" class="form-control search-input" placeholder="ابحث هنا..." value="{{ q }}">
+            </form>
+            <div class="mt-3 d-flex justify-content-center gap-2">
+                <a href="/" class="btn btn-sm {% if not trend %}btn-primary{% else %}btn-light border{% endif %} rounded-pill px-4">الجديد</a>
+                <a href="/?sort=trend" class="btn btn-sm {% if trend %}btn-primary{% else %}btn-light border{% endif %} rounded-pill px-4">🔥 الترند</a>
+            </div>
+        </div>
+
+        <div class="row g-4">
+            {% for game in games %}
+            <div class="col-6 col-md-4 col-lg-3">
+                <div class="game-card" onclick="location.href='/game/{{ game.id }}'">
+                    <img src="{{ url_for('uploaded_file', filename=game.image_filename) if game.image_filename else 'https://via.placeholder.com/300x200' }}" class="game-img">
+                    <div class="p-3">
+                        <small class="text-danger fw-bold"><i class="fas fa-play-circle"></i> عرض الفيديو</small>
+                        <h6 class="fw-bold mt-1 text-truncate">{{ game.title }}</h6>
+                        <span class="btn-enter mt-2">دخول الصفحة</span>
+                    </div>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+
+    {% elif page == 'details' %}
+        <div class="mx-auto mt-5" style="max-width: 900px;">
+            <div class="video-container">
+                {% if game.video_url %}
+                    {% if 'youtube.com' in game.video_url or 'youtu.be' in game.video_url %}
+                        {# تحويل رابط يوتيوب العادي إلى رابط Embed ليشتغل تلقائياً #}
+                        {% set video_id = game.video_url.split('v=')[-1] if 'v=' in game.video_url else game.video_url.split('/')[-1] %}
+                        <iframe src="https://www.youtube.com/embed/{{ video_id }}?autoplay=1&mute=0" frameborder="0" allow="autoplay; encrypted-media" allowfullscreen></iframe>
+                    {% else %}
+                        <video controls autoplay muted>
+                            <source src="{{ game.video_url }}" type="video/mp4">
+                            متصفحك لا يدعم الفيديو.
+                        </video>
+                    {% endif %}
+                {% else %}
+                    <img src="{{ url_for('uploaded_file', filename=game.image_filename) }}" class="w-100">
+                {% endif %}
+            </div>
+
+            <div class="p-4 bg-white rounded-4 shadow-sm border">
+                <h1 class="fw-black">{{ game.title }}</h1>
+                <p class="text-muted small">عدد التحميلات الحالية: {{ game.downloads_count }}</p>
+                <hr>
+                <p class="fs-5 text-secondary" style="line-height: 1.8;">{{ game.description }}</p>
+                
+                <button id="startDownload" class="btn btn-success btn-lg w-100 py-3 rounded-pill fw-bold mt-4 shadow">
+                    <i class="fas fa-download me-2"></i> بدء التحميل (15 ثانية فحص)
+                </button>
+
+                <div id="timerContainer" class="timer-box">
+                    <p class="mb-2 fw-bold">جاري تجهيز ملفك بأمان...</p>
+                    <div class="timer-num" id="countdown">15</div>
+                </div>
+
+                <form id="realDownloadForm" action="/count_download/{{ game.id }}" method="POST" style="display:none;"></form>
+
+                <script>
+                    document.getElementById('startDownload').onclick = function() {
+                        this.style.display = 'none';
+                        document.getElementById('timerContainer').style.display = 'block';
+                        let count = 15;
+                        let counter = setInterval(function() {
+                            count--;
+                            document.getElementById('countdown').innerHTML = count;
+                            if (count <= 0) {
+                                clearInterval(counter);
+                                document.getElementById('realDownloadForm').submit();
+                            }
+                        }, 1000);
+                    };
+                </script>
+            </div>
+            <div class="text-center mt-4 mb-5">
+                <a href="/" class="text-secondary text-decoration-none">← العودة لمتجر Hixu</a>
+            </div>
+        </div>
+
+    {% elif page == 'upload' %}
+        <div class="row">
+            <div class="col-md-8 mx-auto">
+                <div class="bg-white p-4 rounded-4 shadow-sm border">
+                    <h4 class="fw-bold mb-4">إضافة لعبة فيديو</h4>
+                    <form method="POST" enctype="multipart/form-data">
+                        <input type="text" name="title" class="form-control mb-3" placeholder="اسم اللعبة" required>
+                        <textarea name="desc" class="form-control mb-3" placeholder="وصف اللعبة..." rows="3"></textarea>
+                        <div class="row g-3 mb-3">
+                            <div class="col-md-6">
+                                <label class="small text-muted">صورة الغلاف:</label>
+                                <input type="file" name="img_file" class="form-control">
+                            </div>
+                            <div class="col-md-6">
+                                <label class="small text-muted">رابط الفيديو (يوتيوب أو مباشر):</label>
+                                <input type="text" name="video_url" class="form-control" placeholder="https://youtube.com/...">
+                            </div>
+                        </div>
+                        <div class="row g-3 mb-4">
+                            <div class="col-md-6">
+                                <label class="small text-muted">ملف اللعبة:</label>
+                                <input type="file" name="game_file" class="form-control">
+                            </div>
+                            <div class="col-md-6">
+                                <label class="small text-muted">رابط خارجي (بديل):</label>
+                                <input type="text" name="ext_link" class="form-control" placeholder="https://...">
+                            </div>
+                        </div>
+                        <button type="submit" class="btn btn-primary w-100 py-2 fw-bold rounded-pill">نشر في المتجر</button>
+                    </form>
+
+                    <h5 class="fw-bold mt-5 mb-3 text-danger">حذف الألعاب</h5>
+                    <div class="table-responsive">
+                        <table class="table table-hover align-middle">
+                            {% for g in all_games %}
+                            <tr>
+                                <td>{{ g.title }}</td>
+                                <td class="text-end">
+                                    <form action="/delete/{{ g.id }}" method="POST" onsubmit="return confirm('هل تريد الحذف نهائياً؟');">
+                                        <button class="btn btn-sm btn-outline-danger px-3 rounded-pill">حذف</button>
+                                    </form>
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+    {% elif page == 'login' %}
+        <div class="mx-auto mt-5 text-center" style="max-width: 400px; padding: 40px; background: #fff; border-radius: 25px; border: 1px solid #eee;">
+            <h3 class="fw-bold mb-4">دخول الأدمن</h3>
+            <form method="POST">
+                <input type="password" name="password" class="form-control mb-3 text-center rounded-pill" placeholder="كلمة السر" required>
+                <button type="submit" class="btn btn-primary w-100 rounded-pill">دخول</button>
+            </form>
+        </div>
+    {% endif %}
+</div>
+
+<footer>
+    <p class="text-muted small mb-0">Hixu Store 2026 - تجربة ألعاب غامرة</p>
+    <a href="/login" class="hidden-admin">Admin Dashboard Access</a>
+</footer>
+
+</body>
+</html>
+"""
+
+# --- الأوامر البرمجية (الباك آند) ---
+
+@app.route('/')
+def index():
+    q = request.args.get('q', '')
+    sort_type = request.args.get('sort', '')
+    query = Game.query
+    if q: query = query.filter(Game.title.contains(q) | Game.description.contains(q))
+    if sort_type == 'trend': games = query.order_by(Game.downloads_count.desc()).all()
+    else: games = query.order_by(Game.date_added.desc()).all()
+    return render_template_string(MASTER_HTML, page='home', games=games, q=q, trend=(sort_type=='trend'))
+
+@app.route('/game/<int:game_id>')
+def details(game_id):
+    game = Game.query.get_or_404(game_id)
+    return render_template_string(MASTER_HTML, page='details', game=game)
+
+@app.route('/count_download/<int:game_id>', methods=['POST'])
+def count_download(game_id):
+    game = Game.query.get_or_404(game_id)
+    game.downloads_count += 1
+    db.session.commit()
+    if game.file_filename: return redirect(url_for('uploaded_file', filename=game.file_filename))
+    return redirect(game.external_link or '/')
+
+@app.route('/delete/<int:game_id>', methods=['POST'])
+def delete_game(game_id):
+    if not session.get('admin'): abort(403)
+    game = Game.query.get_or_404(game_id)
+    db.session.delete(game)
+    db.session.commit()
+    return redirect(url_for('upload'))
+
+@app.route('/uploads/<filename>')
+def uploaded_file(filename):
+    return send_from_directory(app.config['UPLOAD_FOLDER'], filename)
+
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    if request.method == 'POST' and request.form.get('password') == 'Brandy Renee':
+        session['admin'] = True
+        return redirect(url_for('upload'))
+    return render_template_string(MASTER_HTML, page='login')
+
+@app.route('/upload', methods=['GET', 'POST'])
+def upload():
+    if not session.get('admin'): return redirect(url_for('login'))
+    if request.method == 'POST':
+        img = request.files.get('img_file')
+        file = request.files.get('game_file')
+        img_name = secrets.token_hex(8) + "_" + secure_filename(img.filename) if img and img.filename else None
+        if img_name: img.save(os.path.join(app.config['UPLOAD_FOLDER'], img_name))
+        file_name = secrets.token_hex(8) + "_" + secure_filename(file.filename) if file and file.filename else None
+        if file_name: file.save(os.path.join(app.config['UPLOAD_FOLDER'], file_name))
+        
+        new_game = Game(title=request.form['title'], 
+                        description=request.form['desc'], 
+                        image_filename=img_name, 
+                        file_filename=file_name, 
+                        video_url=request.form.get('video_url'), # حفظ الرابط
+                        external_link=request.form.get('ext_link'))
+        db.session.add(new_game)
+        db.session.commit()
+        return redirect(url_for('index'))
+    all_games = Game.query.order_by(Game.date_added.desc()).all()
+    return render_template_string(MASTER_HTML, page='upload', all_games=all_games)
+
+if __name__ == '__main__':
+    with app.app_context(): db.create_all()
+    app.run(debug=True)
